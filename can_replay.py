@@ -27,7 +27,7 @@ FD 帧在 candump 里不记录 BRS/ESI 标志位，需要时用 --fd-flags 指�
     sudo ./can_replay.py --map vcan2=vcan0 --speed 50 --loop i logs/candump_vcan2_*.log
 
     # 只回灌底盘控制相关的 ID，并丢掉前 100 帧
-    sudo ./can_replay.py --filter-id 181D20A0,181D21A0,181D22A0 --skip 100 logs/*.log
+    sudo ./can_replay.py -id 181D20A0,181D21A0,181D22A0 --skip 100 logs/*.log
 
     # 只回灌 15:31:00 ~ 15:32:30 这段（支持 HH:MM:SS，或带日期）
     sudo ./can_replay.py --from 15:31:00 --to 15:32:30 logs/*.log
@@ -56,7 +56,7 @@ FD 帧在 candump 里不记录 BRS/ESI 标志位，需要时用 --fd-flags 指�
     open_socket()        建立并配置 SocketCAN raw socket
     format_frame()       单帧的人类可读文本（dry-run 打印用）
     parse_map()          --map 参数解析
-    parse_filter()       --filter-id 参数解析
+    parse_filter()       -id / --filter-id 参数解析
     scan_logs()          轻量扫描器，供 --info 与菜单出摘要
     print_stats()        每 ID 的 loaded / sent 统计
     main()               命令行入口：参数 -> 装载 -> dry-run 或发送循环
@@ -348,6 +348,7 @@ def parse_line(line: str, source: str, lineno: int, fd_flags: int = 0) -> Option
         lineno=lineno,
     )
 
+
 #整合原can log为可用数据
 def load_frames(paths: Iterable[str], filter_ids: Optional[set], skip: int,
                 time_filter=None, fd_flags: int = 0, frame_type: str = "all",
@@ -395,6 +396,7 @@ def load_frames(paths: Iterable[str], filter_ids: Optional[set], skip: int,
     frames.sort(key=lambda f: (f.ts, f.lineno))
     return frames[skip:]  # 排好序之后再丢掉前 skip 帧
 
+
 #编码为socketcan可以用的数据
 def encode(frame: Frame) -> bytes:
     """Frame -> 内核结构体字节串（经典帧 16 字节 / FD 帧 72 字节）。"""
@@ -410,6 +412,7 @@ def encode(frame: Frame) -> bytes:
     payload = frame.data[:8].ljust(8, b"\x00")
     return CLASSIC_FRAME.pack(can_id, len(frame.data), payload)
 
+
 #打开socket接口
 def open_socket(iface: str, loopback: bool, need_fd: bool) -> socket.socket:
     """按接口名建一个配置好的 SocketCAN raw socket。"""
@@ -421,6 +424,7 @@ def open_socket(iface: str, loopback: bool, need_fd: bool) -> socket.socket:
     sock.bind((iface,))  # 绑定到具体的 canX / vcanX 接口
     return sock
 
+
 #预览模式
 def format_frame(frame: Frame) -> str:
     """一帧的可读文本，给 --dry-run 预览用（[N] 是实际数据长度，不是 DLC）。"""
@@ -428,6 +432,7 @@ def format_frame(frame: Frame) -> str:
     body = " ".join(f"{b:02X}" for b in frame.data)
     kind = "FD" if frame.is_fd else "2.0"
     return f"{ident} [{len(frame.data)}] {body} ({kind})"
+
 
 #回灌接口设定
 def parse_map(items: Iterable[str]) -> Dict[str, str]:
@@ -440,9 +445,10 @@ def parse_map(items: Iterable[str]) -> Dict[str, str]:
         mapping[src.strip()] = dst.strip()
     return mapping
 
+
 #解析输入的帧ID
 def parse_filter(items: Iterable[str]) -> Optional[set]:
-    """解析 --filter-id：逗号或分号分隔、可重复给，返回十六进制 ID 集合。"""
+    """解析 -id / --filter-id：逗号或分号分隔、可重复给，返回十六进制 ID 集合。"""
     ids = set()
     for item in items or []:
         for token in item.replace(";", ",").split(","):  # 分号也当分隔符
@@ -450,6 +456,7 @@ def parse_filter(items: Iterable[str]) -> Optional[set]:
             if token:
                 ids.add(int(token, 16))
     return ids or None  # 空集合返回 None，调用方用 if filter_ids 判断即可
+
 
 #can log 快速预览
 def scan_logs(paths: Iterable[str]) -> dict:
@@ -559,7 +566,7 @@ def main() -> int:
     parser.add_argument("--loop", default="1", help="循环次数，i/0 表示无限，默认 1")
     parser.add_argument("--gap-ms", type=float, default=0.0, help="相邻帧最小间隔（毫秒）")
     # 筛选：ID 白名单、时间段、跳过 / 限制帧数
-    parser.add_argument("--filter-id", action="append", default=[],
+    parser.add_argument("-id", "--filter-id", action="append", default=[],
                         help="只回灌这些 ID（十六进制，逗号分隔，可重复）")
     parser.add_argument("--from", dest="time_from", metavar="TIME",
                         help="只回灌该时刻之后的帧（HH:MM:SS 或 'YYYY-MM-DD HH:MM:SS'）")
@@ -577,8 +584,8 @@ def main() -> int:
                         help="只回灌指定帧类型：classic=candump 的 [8]（ADU 发送），"
                              "fd=candump 的 [08]（其他节点发来），默认 all")
     # --direction 是台架业务语义，会在下面翻译成 --frame-type
-    parser.add_argument("--direction", choices=("upstream", "downstream", "both"),
-                        help="按台架方向选择报文：upstream=[08] FD，downstream=[8] 经典帧，"
+    parser.add_argument("--direction", choices=("up", "down", "both", "upstream", "downstream"),
+                        help="按台架方向选择报文：up/upstream=[08] FD，down/downstream=[8] 经典帧，"
                              "both=两种都发；指定时覆盖 --frame-type")
     parser.add_argument("--classic-only", dest="frame_type", action="store_const",
                         const="classic", help="等价于 --frame-type classic")
@@ -596,20 +603,16 @@ def main() -> int:
     # 方向语义按当前台架约定：上行使用日志中的 FD [08]，下行使用经典帧 [8]。
     # 方向属于业务分类，不是 CAN 协议字段；不同台架若定义不同，可改用 --frame-type。
     if args.direction:
-        args.frame_type = {"upstream": "fd", "downstream": "classic", "both": "all"}[args.direction]
+        args.frame_type = {
+            "up": "fd", "upstream": "fd",
+            "down": "classic", "downstream": "classic",
+            "both": "all",
+        }[args.direction]
 
     # 倍速必须为正，否则下面的时间换算会除零或倒着走
     if args.speed <= 0:
         raise SystemExit("--speed must be > 0")
-    # ------------------------- 2. 参数归一化与校验 -------------------------
-    # 方向语义按当前台架约定：上行使用日志中的 FD [08]，下行使用经典帧 [8]。
-    # 方向属于业务分类，不是 CAN 协议字段；不同台架若定义不同，可改用 --frame-type。
-    if args.direction:
-        args.frame_type = {"upstream": "fd", "downstream": "classic", "both": "all"}[args.direction]
 
-    # 倍速必须为正，否则下面的时间换算会除零或倒着走
-    if args.speed <= 0:
-        raise SystemExit("--speed must be > 0")
     # ---------------------------- 3. --info 分支 ----------------------------
     # 只出摘要：走轻量扫描器，不建 Frame、不开 socket，也不关心过滤参数
     if args.info:
@@ -628,15 +631,7 @@ def main() -> int:
         return 0
 
     # --------------------------- 4. 组装过滤条件 ---------------------------
-    mapping = parse_map(args.map)    # ------------------------- 2. 参数归一化与校验 -------------------------
-    # 方向语义按当前台架约定：上行使用日志中的 FD [08]，下行使用经典帧 [8]。
-    # 方向属于业务分类，不是 CAN 协议字段；不同台架若定义不同，可改用 --frame-type。
-    if args.direction:
-        args.frame_type = {"upstream": "fd", "downstream": "classic", "both": "all"}[args.direction]
-
-    # 倍速必须为正，否则下面的时间换算会除零或倒着走
-    if args.speed <= 0:
-        raise SystemExit("--speed must be > 0")
+    mapping = parse_map(args.map)
     # 时间过滤返回两个闭包：keep 逐帧判断，beyond_end 让扫描提前收尾
     time_filter, beyond_end = make_time_filter(
         parse_time_bound(args.time_from, "--from") if args.time_from else None,
@@ -748,8 +743,7 @@ def main() -> int:
                 if delay > 0:
                     time.sleep(delay)  # 没到点就睡；已过点就直接发，不做补偿也不丢帧
 
-                sockets[frame.iface].send(encode(frame)) MNBNV C DESW 
-                HGVF[ ,05]
+                sockets[frame.iface].send(encode(frame))
                 previous_send = time.perf_counter()  # 记下实际发完的时刻
                 sent += 1
                 counts[frame.can_id] = counts.get(frame.can_id, 0) + 1
